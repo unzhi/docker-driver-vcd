@@ -153,8 +153,14 @@ func (p *VMProcessor) Create(customCfg interface{}) (*govcd.VApp, error) {
 
 	log.Infof("VMProcessor.Create creates new VM #3 %s instead vApp %s", p.cfg.VMachineName, p.cfg.VAppName)
 
-	if err := p.endlessWaitVCDAppReadyStatusBackoff(vApp); err != nil {
+	if err := p.endlessWaitVCDAppReadyStatusBackoff(); err != nil {
 		log.Errorf("VMProcessor.Create.endlessWaitVCDAppReadyStatusBackoff error: %v", err)
+		return nil, err
+	}
+
+	log.Infof("VMProcessor.Create calling AddNewVM for %s in vApp %s", p.cfg.VMachineName, p.cfg.VAppName)
+	vApp, err = p.getFreshVApp()
+	if err != nil {
 		return nil, err
 	}
 
@@ -165,8 +171,13 @@ func (p *VMProcessor) Create(customCfg interface{}) (*govcd.VApp, error) {
 		true,
 	)
 	if errVM != nil {
-		log.Errorf("VMProcessor.Create.AddNewVM error => go to loop: %v", p.cfg.VMachineName)
+		log.Errorf("VMProcessor.Create.AddNewVM error => go to loop: %v", errVM)
 		waitingFunc := func() error {
+			var refreshErr error
+			vApp, refreshErr = p.getFreshVApp()
+			if refreshErr != nil {
+				return refreshErr
+			}
 			task, errVM = vApp.AddNewVM(
 				p.cfg.VMachineName,
 				p.vcdClient.VAppTemplate,
@@ -174,7 +185,7 @@ func (p *VMProcessor) Create(customCfg interface{}) (*govcd.VApp, error) {
 				true,
 			)
 			if errVM != nil {
-				return fmt.Errorf("VMProcessor.Create.AddNewVM error => retry create VM: %v", p.cfg.VMachineName)
+				return fmt.Errorf("VMProcessor.Create.AddNewVM error => retry create VM %s: %w", p.cfg.VMachineName, errVM)
 			}
 			return nil
 		}
@@ -815,6 +826,19 @@ func (p *VMProcessor) cleanState() error {
 	return nil
 }
 
+func (p *VMProcessor) getFreshVApp() (*govcd.VApp, error) {
+	vApp, err := p.vcdClient.VirtualDataCenter.GetVAppByName(p.cfg.VAppName, true)
+	if err != nil {
+		log.Errorf("VMProcessor.getFreshVApp.GetVAppByName error: %v", err)
+		return nil, err
+	}
+	if err := vApp.Refresh(); err != nil {
+		log.Errorf("VMProcessor.getFreshVApp.Refresh error: %v", err)
+		return nil, err
+	}
+	return vApp, nil
+}
+
 // endlessWaitAllVAppTasksBaclkoff - endless waiting for correct vApp status
 func (p *VMProcessor) endlessWaitAllVAppTasksBaclkoff() error {
 	waitingFunc := func() error {
@@ -822,6 +846,7 @@ func (p *VMProcessor) endlessWaitAllVAppTasksBaclkoff() error {
 		vApp, err := p.vcdClient.VirtualDataCenter.GetVAppByName(p.cfg.VAppName, true)
 		if err != nil {
 			log.Errorf("VMProcessor.endlessWaitVAppReadyStatus.GetVAppByName error: %v", err)
+			return err
 		}
 		if vApp.VApp.Tasks == nil {
 			return nil
@@ -855,8 +880,12 @@ func (p *VMProcessor) endlessWaitAllVAppTasksBaclkoff() error {
 }
 
 // endlessWaitVCDAppReadyStatusBackoff - endless waiting for correct vApp status
-func (p *VMProcessor) endlessWaitVCDAppReadyStatusBackoff(vApp *govcd.VApp) error {
+func (p *VMProcessor) endlessWaitVCDAppReadyStatusBackoff() error {
 	waitingFunc := func() error {
+		vApp, err := p.getFreshVApp()
+		if err != nil {
+			return err
+		}
 		status, err := vApp.GetStatus()
 		if err != nil {
 			log.Errorf("VMProcessor.endlessWaitVAppReadyStatus.GetStatus error: %v", err)
@@ -893,7 +922,7 @@ func (p *VMProcessor) endlessWaitVCDAppReadyStatusBackoff(vApp *govcd.VApp) erro
 // WaitReadyVAppAndRunTask - wait until vApp will be ready and run task
 func (p *VMProcessor) WaitReadyVAppAndRunTask(vApp *govcd.VApp, task govcd.Task) error {
 	// wait until vApp will be ready
-	if err := p.endlessWaitVCDAppReadyStatusBackoff(vApp); err != nil {
+	if err := p.endlessWaitVCDAppReadyStatusBackoff(); err != nil {
 		log.Errorf("VMProcessor.TaskWithReadyVApp.endlessWaitVCDAppReadyStatusBackoff before task error: %v", err)
 		return err
 	}
@@ -904,7 +933,7 @@ func (p *VMProcessor) WaitReadyVAppAndRunTask(vApp *govcd.VApp, task govcd.Task)
 	}
 
 	// wait until vApp will be ready after task
-	if err := p.endlessWaitVCDAppReadyStatusBackoff(vApp); err != nil {
+	if err := p.endlessWaitVCDAppReadyStatusBackoff(); err != nil {
 		log.Errorf("VMProcessor.TaskWithReadyVApp.endlessWaitVCDAppReadyStatusBackoff after task error: %v", err)
 		return err
 	}

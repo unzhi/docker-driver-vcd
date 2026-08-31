@@ -2,6 +2,7 @@ package client
 
 import (
 	"net/url"
+	"time"
 
 	"github.com/docker/machine/libmachine/log"
 	"github.com/vmware/go-vcloud-director/v2/govcd"
@@ -52,6 +53,10 @@ func NewVCloudClient(cfg ConfigClient) (*VCloudClient, error) {
 		log.Errorf("NewVCloudClient.Authenticate error: %v", errAuth)
 		return nil, errAuth
 	}
+
+	// Fail hung vCD API calls instead of blocking provision jobs indefinitely.
+	vcdClient.Client.Client.MaxRetryTimeout = 120
+	vcdClient.Client.Client.Http.Timeout = 180 * time.Second
 
 	// Prepare vdc application
 	org, errOrg := vcdClient.Client.GetOrgByName(cfg.Org)

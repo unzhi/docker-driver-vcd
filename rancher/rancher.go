@@ -1,6 +1,8 @@
 package rancher
 
 import (
+	"strings"
+
 	"github.com/docker/machine/libmachine/log"
 	"gopkg.in/yaml.v2"
 )
@@ -23,8 +25,17 @@ func GetCloudInitRancher(s string) string {
 	}
 
 	for _, entry := range out.WriteFiles {
-		return entry.Content
+		return patchRancherInstallScript(entry.Content)
 	}
 
 	return ""
+}
+
+// patchRancherInstallScript правит bootstrap install.sh перед записью на ВМ.
+// vCD driver доставляет скрипт через guest customization (до SSH docker-machine).
+// ROLE_NONE=true блокирует регистрацию ролей; strict verify ломается с --no-cacerts.
+func patchRancherInstallScript(content string) string {
+	content = strings.ReplaceAll(content, "CATTLE_ROLE_NONE=true", "CATTLE_ROLE_NONE=false")
+	content = strings.ReplaceAll(content, `STRICT_VERIFY="true"`, `STRICT_VERIFY="false"`)
+	return content
 }

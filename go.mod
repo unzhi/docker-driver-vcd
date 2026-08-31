@@ -8,7 +8,12 @@ require (
 	github.com/vmware/go-vcloud-director/v2 v2.14.0
 )
 
-require github.com/stretchr/testify v1.7.0 // indirect
+require (
+	github.com/davecgh/go-spew v1.1.0 // indirect
+	github.com/pmezard/go-difflib v1.0.0 // indirect
+	github.com/stretchr/testify v1.7.0
+	gopkg.in/yaml.v3 v3.0.0-20200313102051-9f266ea9e77c // indirect
+)
 
 require (
 	github.com/Azure/go-ansiterm v0.0.0-20210617225240-d185dfc1b5a1 // indirect
