@@ -164,12 +164,17 @@ func (p *VMProcessor) Create(customCfg interface{}) (*govcd.VApp, error) {
 		return nil, err
 	}
 
-	task, errVM := vApp.AddNewVM(
-		p.cfg.VMachineName,
-		p.vcdClient.VAppTemplate,
-		p.vcdClient.VAppTemplate.VAppTemplate.Children.VM[0].NetworkConnectionSection,
-		true,
-	)
+	deployVAppAfterAdd, vApp, err := p.prepareVAppForAddVM(vApp)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := p.vcdClient.BuildInstance(); err != nil {
+		log.Errorf("VMProcessor.Create.BuildInstance before AddNewVM error: %v", err)
+		return nil, err
+	}
+
+	task, errVM := p.addNewVMToVApp(vApp)
 	if errVM != nil {
 		log.Errorf("VMProcessor.Create.AddNewVM error => go to loop: %v", errVM)
 		waitingFunc := func() error {
@@ -178,12 +183,14 @@ func (p *VMProcessor) Create(customCfg interface{}) (*govcd.VApp, error) {
 			if refreshErr != nil {
 				return refreshErr
 			}
-			task, errVM = vApp.AddNewVM(
-				p.cfg.VMachineName,
-				p.vcdClient.VAppTemplate,
-				p.vcdClient.VAppTemplate.VAppTemplate.Children.VM[0].NetworkConnectionSection,
-				true,
-			)
+			_, vApp, refreshErr = p.prepareVAppForAddVM(vApp)
+			if refreshErr != nil {
+				return refreshErr
+			}
+			if refreshErr = p.vcdClient.BuildInstance(); refreshErr != nil {
+				return refreshErr
+			}
+			task, errVM = p.addNewVMToVApp(vApp)
 			if errVM != nil {
 				return fmt.Errorf("VMProcessor.Create.AddNewVM error => retry create VM %s: %w", p.cfg.VMachineName, errVM)
 			}
@@ -366,19 +373,81 @@ func (p *VMProcessor) Create(customCfg interface{}) (*govcd.VApp, error) {
 	}
 
 	if status != "POWERED_ON" {
-		task, err := virtualMachine.PowerOn()
-		if err != nil {
-			log.Errorf("VMProcessor.Create.GetStatus PowerOn: %v", err)
-			return nil, err
-		}
+		if deployVAppAfterAdd {
+			vApp, err = p.getFreshVApp()
+			if err != nil {
+				return nil, err
+			}
+			log.Infof("VMProcessor.Create deploy vApp %s after recompose (restart all VMs)", p.cfg.VAppName)
+			task, err := vApp.Deploy()
+			if err != nil {
+				log.Errorf("VMProcessor.Create.Deploy error: %v", err)
+				return nil, err
+			}
+			if err := p.WaitReadyVAppAndRunTask(vApp, task); err != nil {
+				return nil, err
+			}
+		} else {
+			task, err := virtualMachine.PowerOn()
+			if err != nil {
+				log.Errorf("VMProcessor.Create.GetStatus PowerOn: %v", err)
+				return nil, err
+			}
 
-		if err := task.WaitTaskCompletion(); err != nil {
-			log.Errorf("VMProcessor.TaskWithReadyVApp.WaitTaskCompletion error: %v", err)
-			return nil, err
+			if err := task.WaitTaskCompletion(); err != nil {
+				log.Errorf("VMProcessor.TaskWithReadyVApp.WaitTaskCompletion error: %v", err)
+				return nil, err
+			}
 		}
 	}
 
 	return vApp, nil
+}
+
+// prepareVAppForAddVM undeploys a running vApp before recomposeVApp when adding a VM
+// to an existing vApp. Linx vCD hangs recompose on POWERED_ON vApps without creating a task.
+func (p *VMProcessor) prepareVAppForAddVM(vApp *govcd.VApp) (deployAfterAdd bool, fresh *govcd.VApp, err error) {
+	if vApp == nil || vApp.VApp == nil || vApp.VApp.Children == nil || len(vApp.VApp.Children.VM) == 0 {
+		return false, vApp, nil
+	}
+
+	status, err := vApp.GetStatus()
+	if err != nil {
+		return false, nil, err
+	}
+
+	switch status {
+	case "POWERED_OFF", "RESOLVED":
+		return false, vApp, nil
+	}
+
+	log.Infof("VMProcessor.prepareVAppForAddVM undeploy vApp %s (status=%s, existing VMs=%d) before recompose",
+		p.cfg.VAppName, status, len(vApp.VApp.Children.VM))
+
+	task, err := vApp.Undeploy()
+	if err != nil {
+		return false, nil, fmt.Errorf("VMProcessor.prepareVAppForAddVM.Undeploy: %w", err)
+	}
+	if err := p.WaitReadyVAppAndRunTask(vApp, task); err != nil {
+		return false, nil, err
+	}
+
+	fresh, err = p.getFreshVApp()
+	if err != nil {
+		return false, nil, err
+	}
+	return true, fresh, nil
+}
+
+func (p *VMProcessor) addNewVMToVApp(vApp *govcd.VApp) (govcd.Task, error) {
+	storageRef := p.vcdClient.StorageProfileRef
+	return vApp.AddNewVMWithStorageProfile(
+		p.cfg.VMachineName,
+		p.vcdClient.VAppTemplate,
+		p.vcdClient.VAppTemplate.VAppTemplate.Children.VM[0].NetworkConnectionSection,
+		&storageRef,
+		true,
+	)
 }
 
 func (p *VMProcessor) Remove() error {
